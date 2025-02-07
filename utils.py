@@ -87,33 +87,55 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
 
 def get_norm_stats(dataset_dir, num_episodes):
-    all_qpos_data = []
-    all_action_data = []
+    """
+    计算并返回给定目录下指定数量的episode文件中的动作(action)和位置(qpos)数据的归一化统计信息。
+    
+    参数:
+    - dataset_dir: 数据集所在的目录路径。
+    - num_episodes: 要考虑的episode数量。
+    
+    返回:
+    - stats: 包含动作和位置数据的归一化均值和标准差的字典。
+    """
+    all_qpos_data = []  # 存储所有episodes的位置数据
+    all_action_data = []  # 存储所有episodes的动作数据
+    
     for episode_idx in range(num_episodes):
+        # 构造每个episode对应的HDF5文件路径
         dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
+        
+        # 打开HDF5文件并读取数据
         with h5py.File(dataset_path, 'r') as root:
-            qpos = root['/observations/qpos'][()]
-            qvel = root['/observations/qvel'][()]
-            action = root['/action'][()]
+            qpos = root['/observations/qpos'][()]  # 获取位置数据
+            qvel = root['/observations/qvel'][()]  # 获取速度数据，但未使用
+            action = root['/action'][()]  # 获取动作数据
+            
+        # 将numpy数组转换为PyTorch张量，并添加到对应列表中
         all_qpos_data.append(torch.from_numpy(qpos))
         all_action_data.append(torch.from_numpy(action))
+    
+    # 将列表中的所有张量堆叠成一个大张量
     all_qpos_data = torch.stack(all_qpos_data)
     all_action_data = torch.stack(all_action_data)
-    all_action_data = all_action_data
-
-    # normalize action data
-    action_mean = all_action_data.mean(dim=[0, 1], keepdim=True)
-    action_std = all_action_data.std(dim=[0, 1], keepdim=True)
-    action_std = torch.clip(action_std, 1e-2, np.inf) # clipping
-
-    # normalize qpos data
-    qpos_mean = all_qpos_data.mean(dim=[0, 1], keepdim=True)
-    qpos_std = all_qpos_data.std(dim=[0, 1], keepdim=True)
-    qpos_std = torch.clip(qpos_std, 1e-2, np.inf) # clipping
-
-    stats = {"action_mean": action_mean.numpy().squeeze(), "action_std": action_std.numpy().squeeze(),
-             "qpos_mean": qpos_mean.numpy().squeeze(), "qpos_std": qpos_std.numpy().squeeze(),
-             "example_qpos": qpos}
+    
+    # 计算动作数据的归一化参数
+    action_mean = all_action_data.mean(dim=[0, 1], keepdim=True)  # 动作数据的均值
+    action_std = all_action_data.std(dim=[0, 1], keepdim=True)  # 动作数据的标准差
+    action_std = torch.clip(action_std, 1e-2, np.inf)  # 对标准差进行裁剪，避免过小值导致数值不稳定
+    
+    # 计算位置数据的归一化参数
+    qpos_mean = all_qpos_data.mean(dim=[0, 1], keepdim=True)  # 位置数据的均值
+    qpos_std = all_qpos_data.std(dim=[0, 1], keepdim=True)  # 位置数据的标准差
+    qpos_std = torch.clip(qpos_std, 1e-2, np.inf)  # 同样对位置数据的标准差进行裁剪
+    
+    # 创建并返回包含归一化统计信息的字典
+    stats = {
+        "action_mean": action_mean.numpy().squeeze(),  # 动作数据的均值
+        "action_std": action_std.numpy().squeeze(),  # 动作数据的标准差
+        "qpos_mean": qpos_mean.numpy().squeeze(),  # 位置数据的均值
+        "qpos_std": qpos_std.numpy().squeeze(),  # 位置数据的标准差
+        "example_qpos": qpos  # 示例位置数据（最后一个episode的位置数据）
+    }
 
     return stats
 
