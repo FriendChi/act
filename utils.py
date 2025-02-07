@@ -9,71 +9,81 @@ e = IPython.embed
 
 class EpisodicDataset(torch.utils.data.Dataset):
     def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
-        super(EpisodicDataset).__init__()
-        self.episode_ids = episode_ids
-        self.dataset_dir = dataset_dir
-        self.camera_names = camera_names
-        self.norm_stats = norm_stats
-        self.is_sim = None
-        self.__getitem__(0) # initialize self.is_sim
+        """
+        初始化函数，设置episode IDs、数据集目录、相机名称列表以及归一化统计信息。
+        """
+        super(EpisodicDataset, self).__init__()
+        self.episode_ids = episode_ids  # 每个episode的ID列表
+        self.dataset_dir = dataset_dir  # 数据集所在的目录路径
+        self.camera_names = camera_names  # 使用的相机名称列表
+        self.norm_stats = norm_stats  # 包含'action', 'qpos'等的归一化统计信息
+        self.is_sim = None  # 标记是否为仿真环境
+        self.__getitem__(0)  # 通过获取第1个item初始化self.is_sim
 
     def __len__(self):
+        """
+        返回数据集中episode的数量。
+        """
         return len(self.episode_ids)
 
     def __getitem__(self, index):
-        sample_full_episode = False # hardcode
+        """
+        根据index返回指定episode的数据，包括图像、位置、速度和动作等信息。
+        """
+        sample_full_episode = False  # 是否采样整个episode，默认不采样
 
-        episode_id = self.episode_ids[index]
-        dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
-        with h5py.File(dataset_path, 'r') as root:
-            is_sim = root.attrs['sim']
-            original_action_shape = root['/action'].shape
-            episode_len = original_action_shape[0]
+        episode_id = self.episode_ids[index]  # 获取当前episode ID
+        dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')  # 构造文件路径
+        with h5py.File(dataset_path, 'r') as root:  # 打开HDF5文件
+            is_sim = root.attrs['sim']  # 判断是否为仿真环境
+            original_action_shape = root['/action'].shape  # 动作的原始形状
+            episode_len = original_action_shape[0]  # 当前episode长度（时间步长数）
             if sample_full_episode:
-                start_ts = 0
+                start_ts = 0  # 如果是采样整个episode，则从头开始
             else:
-                start_ts = np.random.choice(episode_len)
-            # get observation at start_ts only
+                start_ts = np.random.choice(episode_len)  # 随机选择一个时间点作为起始点
+            
+            # 获取选定时间点的观察数据
             qpos = root['/observations/qpos'][start_ts]
             qvel = root['/observations/qvel'][start_ts]
             image_dict = dict()
             for cam_name in self.camera_names:
-                image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts]
-            # get all actions after and including start_ts
+                image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts]  # 对每个相机，获取其图像
+            
+            # 获取从start_ts开始的所有动作
             if is_sim:
                 action = root['/action'][start_ts:]
                 action_len = episode_len - start_ts
             else:
-                action = root['/action'][max(0, start_ts - 1):] # hack, to make timesteps more aligned
-                action_len = episode_len - max(0, start_ts - 1) # hack, to make timesteps more aligned
+                action = root['/action'][max(0, start_ts - 1):]  # 特殊情况处理，使时间步对齐
+                action_len = episode_len - max(0, start_ts - 1)
 
-        self.is_sim = is_sim
-        padded_action = np.zeros(original_action_shape, dtype=np.float32)
-        padded_action[:action_len] = action
-        is_pad = np.zeros(episode_len)
-        is_pad[action_len:] = 1
+        self.is_sim = is_sim  # 设置是否为仿真环境标记
+        padded_action = np.zeros(original_action_shape, dtype=np.float32)  # 创建与原始动作相同形状的填充数组
+        padded_action[:action_len] = action  # 填充实际的动作数据
+        is_pad = np.zeros(episode_len)  # 创建填充标志数组
+        is_pad[action_len:] = 1  # 超过实际动作长度的部分标记为填充
 
-        # new axis for different cameras
         all_cam_images = []
         for cam_name in self.camera_names:
-            all_cam_images.append(image_dict[cam_name])
-        all_cam_images = np.stack(all_cam_images, axis=0)
+            all_cam_images.append(image_dict[cam_name])  # 收集所有相机的图像
+        all_cam_images = np.stack(all_cam_images, axis=0)  # 将图像堆叠成一个numpy数组
 
-        # construct observations
+        # 构建返回的张量
         image_data = torch.from_numpy(all_cam_images)
         qpos_data = torch.from_numpy(qpos).float()
         action_data = torch.from_numpy(padded_action).float()
         is_pad = torch.from_numpy(is_pad).bool()
 
-        # channel last
+        # 图像通道调整顺序
         image_data = torch.einsum('k h w c -> k c h w', image_data)
 
-        # normalize image and change dtype to float
+        # 归一化图像并转换数据类型为float
         image_data = image_data / 255.0
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
 
-        return image_data, qpos_data, action_data, is_pad
+        return image_data, qpos_data, action_data, is_pad  # 返回包含图像、位置、动作和填充标志的数据
 
 
 def get_norm_stats(dataset_dir, num_episodes):
